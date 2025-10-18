@@ -36,6 +36,7 @@ inline void printMainMenu() {
     cout << "5. 顺序表（基本线性表）\n";
     cout << "6. 链表（基本线性表）\n";
     cout << "7. 四则运算表达式求值\n";
+    cout << "8. 编程界面（DEF / RUN）\n";
     cout << "0. 退出\n";
     cout << "请输入您的选择: ";
 }

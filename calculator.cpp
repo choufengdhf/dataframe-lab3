@@ -84,6 +84,279 @@ static void maybeSaveResult(const PolyT& result, MapT& mp) {
         cout << "已保存为 '" << nm << "'。\n";
     }
 }
+// ------------------ 用户自定义函数（DEF / RUN 支持） ------------------
+struct UserFunction {
+    std::string param; // 形参名
+    std::string body;  // 函数体表达式（字符串形式）
+};
+
+static inline std::string trimCopy(const std::string &s) {
+    size_t a = 0, b = s.size();
+    while (a < b && isspace((unsigned char)s[a])) ++a;
+    while (b > a && isspace((unsigned char)s[b-1])) --b;
+    return s.substr(a, b-a);
+}
+
+static bool isIdentChar(char c) {
+    return std::isalnum((unsigned char)c) || c == '_';
+}
+
+// 判断一个 token 是否为纯数字（可带小数点和符号）
+static bool isNumberToken(const std::string &t) {
+    if (t.empty()) return false;
+    size_t i = 0;
+    if (t[0] == '+' || t[0] == '-') ++i;
+    bool hasDigit = false, hasDot = false;
+    for (; i < t.size(); ++i) {
+        if (std::isdigit((unsigned char)t[i])) hasDigit = true;
+        else if (t[i] == '.' && !hasDot) hasDot = true;
+        else return false;
+    }
+    return hasDigit;
+}
+
+// 将 body 中所有独立出现的形参替换为 argText（argText 应该已经根据需要用括号包裹）
+static std::string replaceParamIdentifier(const std::string &body, const std::string &param, const std::string &argText) {
+    if (param.empty()) return body;
+    // 把 body 和 argText 都 tokenize，然后在 token 级别替换 param -> argTokens
+    vector<string> bodyToks = ExpressionEvaluator::tokenize(body);
+    vector<string> argToks = ExpressionEvaluator::tokenize(argText);
+
+    std::string out;
+    out.reserve(body.size() + argText.size() * 2);
+
+    for (size_t i = 0; i < bodyToks.size(); ++i) {
+        const string &tk = bodyToks[i];
+        if (tk == param) {
+            // 插入 argTokens（不加额外括号——调用方应决定是否包裹）
+            for (const auto &at : argToks) out += at;
+        } else {
+            out += tk;
+        }
+    }
+    return out;
+}
+
+// 递归展开表达式中的用户函数调用，depth 用于防止无限递归
+static std::string expandFunctionsRecursive(const std::string &expr, const std::unordered_map<std::string, UserFunction> &userFuncs, int depth = 0) {
+    if (depth > 30) throw std::runtime_error("函数展开深度过大（可能存在递归）");
+    std::string s = expr;
+    size_t i = 0;
+    while (i < s.size()) {
+        // 寻找形如 name(...)
+        if (std::isalpha((unsigned char)s[i]) || s[i]=='_') {
+            size_t idStart = i;
+            size_t j = i + 1;
+            while (j < s.size() && isIdentChar(s[j])) ++j;
+            std::string name = s.substr(idStart, j - idStart);
+            // 跳过空白后看是否是 '('
+            size_t k = j;
+            while (k < s.size() && isspace((unsigned char)s[k])) ++k;
+            if (k < s.size() && s[k] == '(') {
+                // 解析括号内的内容，支持嵌套
+                size_t p = k + 1;
+                int depthParen = 1;
+                while (p < s.size() && depthParen > 0) {
+                    if (s[p] == '(') ++depthParen;
+                    else if (s[p] == ')') --depthParen;
+                    ++p;
+                }
+                if (depthParen != 0) {
+                    // 括号不匹配，跳过
+                    i = j;
+                    continue;
+                }
+                std::string argText = s.substr(k + 1, p - (k + 1));
+                // 先递归展开参数内部的函数调用
+                std::string expandedArg = expandFunctionsRecursive(argText, userFuncs, depth + 1);
+                // 查找是否有定义的函数
+                auto it = userFuncs.find(name);
+                if (it != userFuncs.end()) {
+                    // 用括号包裹参数以保留优先级
+                    std::string wrappedArg = "(" + expandedArg + ")";
+                    std::string replaced = replaceParamIdentifier(it->second.body, it->second.param, wrappedArg);
+                    // 递归展开替换后可能产生的新函数调用
+                    std::string finalExpanded = expandFunctionsRecursive(replaced, userFuncs, depth + 1);
+                    // replace s[idStart .. p-1] with finalExpanded
+                    s.replace(idStart, p - idStart, finalExpanded);
+                    // 继续从 idStart 位置处理（新的内容可能包含更多调用）
+                    i = idStart + finalExpanded.size();
+                    continue;
+                } else {
+                    // 未定义的函数名，跳过但保留对参数的展开结果
+                    s.replace(k + 1, p - (k + 1), expandedArg);
+                    i = p;
+                    continue;
+                }
+            } else {
+                // 不是函数调用，继续
+                i = j;
+                continue;
+            }
+        } else {
+            ++i;
+        }
+    }
+    return s;
+}
+
+// 处理 DEF 语句：格式 DEF name(param)=expr
+static bool handleDEF(const std::string &line, std::unordered_map<std::string, UserFunction> &userFuncs, std::string &errMsg) {
+    // 简单解析
+    size_t p = 0;
+    while (p < line.size() && isspace((unsigned char)line[p])) ++p;
+    // find first space
+    size_t sp = line.find_first_of(" \t", p);
+    size_t start = (sp==std::string::npos) ? p : sp+1;
+    std::string rest = trimCopy(line.substr(start));
+    // 找到 '='
+    size_t eq = rest.find('=');
+    if (eq == std::string::npos) { errMsg = "缺少 '='"; return false; }
+    std::string left = trimCopy(rest.substr(0, eq));
+    std::string right = trimCopy(rest.substr(eq + 1));
+    // left 应为 name(param)
+    size_t lp = left.find('(');
+    size_t rp = left.rfind(')');
+    if (lp == std::string::npos || rp == std::string::npos || rp <= lp) { errMsg = "左侧应为 name(param) 格式"; return false; }
+    std::string name = trimCopy(left.substr(0, lp));
+    std::string param = trimCopy(left.substr(lp + 1, rp - lp - 1));
+    if (name.empty() || param.empty()) { errMsg = "函数名或参数为空"; return false; }
+    // 基本合法性检查：name 和 param 都应为标识符
+    if (!std::isalpha((unsigned char)name[0])) { errMsg = "函数名不是合法标识符"; return false; }
+    if (!std::isalpha((unsigned char)param[0])) { errMsg = "参数名不是合法标识符"; return false; }
+    for (char c : name) if (!isIdentChar(c)) { errMsg = "函数名不是合法标识符"; return false; }
+    for (char c : param) if (!isIdentChar(c)) { errMsg = "参数名不是合法标识符"; return false; }
+    // 在存储前展开 RHS 中已定义的函数调用，并尝试将其化简为多项式形式
+    try {
+        std::string expandedRight = expandFunctionsRecursive(right, userFuncs);
+
+        // 新增：规范化：去除形如 "(param)" 的多余括号（多次迭代以处理嵌套情况）
+        // 例如把 "1+(x)" -> "1+x"，把 "((x))" -> "x"
+        if (!param.empty()) {
+            std::string patternL = "(" + param + ")";
+            // 反复替换直到没有匹配（避免嵌套残留）
+            size_t pos;
+            while ((pos = expandedRight.find("(" + param + ")")) != std::string::npos) {
+                expandedRight.erase(pos, param.size() + 2);
+                expandedRight.insert(pos, param);
+            }
+            // 另外尝试去掉多余的双括号，如 "((x))" -> "(x)" 再由上面去掉
+            // 已上循环可以多次运行，通常足够
+        }
+
+        // 尝试将展开后的表达式解析为多项式
+        try {
+            Poly p = parseExpressionToPoly(expandedRight, param);
+            // 将 Poly 转回标准表达式字符串（按降幂遍历）
+            std::ostringstream oss;
+            bool firstTerm = true;
+            for (auto &kv : p.coef) {
+                int deg = kv.first;
+                double coef = kv.second;
+                if (std::fabs(coef) < 1e-12) continue;
+                if (!firstTerm) oss << (coef < 0 ? '-' : '+');
+                else if (coef < 0) oss << '-';
+                double absC = std::fabs(coef);
+                auto fmtNum = [&](double v)->std::string{
+                    long long iv = llround(v);
+                    if (std::fabs(v - (double)iv) < 1e-12) return std::to_string(iv);
+                    std::ostringstream ss; ss.setf(std::ios::fixed); ss.precision(6); ss << v; std::string s = ss.str();
+                    if (s.find('.') != std::string::npos) {
+                        while (!s.empty() && s.back() == '0') s.pop_back();
+                        if (!s.empty() && s.back() == '.') s.pop_back();
+                    }
+                    return s;
+                };
+                if (deg == 0) {
+                    oss << fmtNum(absC);
+                } else {
+                    if (std::fabs(absC - 1.0) >= 1e-12) oss << fmtNum(absC) << '*';
+                    oss << param;
+                    if (deg != 1) oss << '^' << deg;
+                }
+                firstTerm = false;
+            }
+            std::string stored = oss.str();
+            if (stored.empty()) stored = "0";
+            UserFunction uf; uf.param = param; uf.body = stored;
+            userFuncs[name] = uf;
+            return true;
+        } catch (const std::exception &e) {
+            // 不能解析为多项式，保存展开后的表达式字符串（已展开内部函数），
+            // 但先再做一次简单的括号清理，将 "(x)" -> "x" 等
+            std::string cleaned = trimCopy(expandedRight);
+            if (!param.empty()) {
+                size_t pos;
+                while ((pos = cleaned.find("(" + param + ")")) != std::string::npos) {
+                    cleaned.erase(pos, param.size() + 2);
+                    cleaned.insert(pos, param);
+                }
+            }
+            UserFunction uf; uf.param = param; uf.body = cleaned;
+            userFuncs[name] = uf;
+            return true;
+        }
+    } catch (const std::exception &e) {
+        errMsg = std::string("在展开 RHS 时出错: ") + e.what();
+        return false;
+    }
+}   
+
+// 处理 RUN 语句：支持 RUN f(y) （展示），RUN f(5)（计算），RUN expr（计算）
+static bool handleRUN(const std::string &line, const std::unordered_map<std::string, UserFunction> &userFuncs, std::string &outStr, bool &isPrinted) {
+    // 去掉前缀 RUN
+    size_t p = 0; while (p < line.size() && isspace((unsigned char)line[p])) ++p;
+    size_t sp = line.find_first_of(" \t", p);
+    size_t start = (sp==std::string::npos) ? p : sp+1;
+    std::string rest = trimCopy(line.substr(start));
+    if (rest.empty()) { outStr = "RUN 后缺少表达式"; return false; }
+    // 判断是否为 name(arg)
+    size_t lp = rest.find('(');
+    size_t rp = rest.rfind(')');
+    if (lp != std::string::npos && rp != std::string::npos && rp > lp) {
+        std::string name = trimCopy(rest.substr(0, lp));
+        std::string arg = trimCopy(rest.substr(lp + 1, rp - lp - 1));
+        auto it = userFuncs.find(name);
+        if (it != userFuncs.end()) {
+            // 若参数为标识符（字母开头且仅含标识符字符） -> 展示替换后的表达式
+            bool argIsIdent = !arg.empty() && std::isalpha((unsigned char)arg[0]);
+            for (char c : arg) if (!isIdentChar(c)) { argIsIdent = false; break; }
+            if (argIsIdent) {
+                std::string displayed = replaceParamIdentifier(it->second.body, it->second.param, arg);
+                outStr = displayed;
+                isPrinted = true;
+                return true;
+            }
+            // 否则视为表达式 / 数字：先展开内部函数，再用表达式求值
+            try {
+                std::string expandedArg = expandFunctionsRecursive(arg, userFuncs);
+                std::string wrappedArg = "(" + expandedArg + ")";
+                std::string replaced = replaceParamIdentifier(it->second.body, it->second.param, wrappedArg);
+                std::string finalExpanded = expandFunctionsRecursive(replaced, userFuncs);
+                double val = ExpressionEvaluator::evaluate(finalExpanded, VarMap{});
+                outStr = std::to_string(val);
+                isPrinted = false;
+                return true;
+            } catch (const std::exception &e) {
+                outStr = std::string("求值错误: ") + e.what();
+                return false;
+            }
+        }
+    }
+    // 不是 simple name(arg) 或 name 未定义 -> 作为通用表达式处理（先展开已知函数调用再求值）
+    try {
+        std::string expanded = expandFunctionsRecursive(rest, userFuncs);
+        double val = ExpressionEvaluator::evaluate(expanded, VarMap{});
+        outStr = std::to_string(val);
+        isPrinted = false;
+        return true;
+    } catch (const std::exception &e) {
+        outStr = std::string("求值错误: ") + e.what();
+        return false;
+    }
+}
+
+// ------------------ end DEF/RUN ------------------
 
 int main() {
     SeqList<int> seqList;
@@ -92,6 +365,8 @@ int main() {
     // 存储命名的多项式集合
     unordered_map<string, Polynomial_Seq> polySeqMap;
     unordered_map<string, Polynomial_Link> polyLinkMap;
+    // 存储用户自定义函数（DEF / RUN）
+    std::unordered_map<std::string, UserFunction> userFuncs;
 
     vect_Seq vect_seq1, vect_seq2;
     vect_Link vect_link1, vect_link2;
@@ -446,6 +721,42 @@ int main() {
                     case 5: destroyLinkList(linkList); break;
                     case 0: back = true; break;
                     default: cout << "无效选择，请重新输入！\n";
+                }
+            }
+            break;
+        }
+        case 8: { // 编程界面：支持 DEF / RUN
+            cout << "进入编程界面。输入 DEF <定义> 或 RUN <运行>，输入 EXIT 返回主菜单。\n";
+            while (true) {
+                cout << "prog> ";
+                string line;
+                if (!getline(cin, line)) break; // EOF
+                string t = trimCopy(line);
+                if (t.empty()) continue;
+                // 取第一个 token
+                size_t sp = t.find_first_of(" \t");
+                string cmd = (sp==string::npos) ? t : t.substr(0, sp);
+                if (cmd == "DEF" || cmd == "def") {
+                    string err;
+                    if (!handleDEF(t, userFuncs, err)) cout << "DEF 失败: " << err << "\n";
+                    // 成功时静默返回
+                    continue;
+                } else if (cmd == "RUN" || cmd == "run") {
+                    string out; bool isPrinted = false;
+                    if (handleRUN(t, userFuncs, out, isPrinted)) {
+                        cout << out << "\n";
+                    } else {
+                        cout << "RUN 失败: " << out << "\n";
+                    }
+                    continue;
+                } else if (cmd == "EXIT" || cmd == "exit") {
+                    break;
+                } else {
+                    // 当作表达式直接运行
+                    string out; bool isPrinted = false;
+                    if (handleRUN(string("RUN ") + t, userFuncs, out, isPrinted)) cout << out << "\n";
+                    else cout << "运行失败: " << out << "\n";
+                    continue;
                 }
             }
             break;
