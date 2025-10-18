@@ -37,29 +37,6 @@ inline bool isIdentifierChar(char c) {
         || c == '_';
 }
 
-// static std::string normalizeUnaryMinus(const std::string &in) {
-//     std::string out;
-//     out.reserve(in.size() * 2);
-//     auto isOp = [](char c)->bool {
-//         return c=='+' || c=='-' || c=='*' || c=='/' || c=='^';
-//     };
-//     for (size_t i = 0; i < in.size(); ++i) {
-//         char c = in[i];
-//         if (c == '-') {
-//             // 查找前一个非空白字符
-//             size_t j = out.size();
-//             while (j > 0 && std::isspace(static_cast<unsigned char>(out[j-1]))) --j;
-//             char prev = (j==0) ? '\0' : out[j-1];
-//             if (j == 0 || prev == '(' || isOp(prev)) {
-//                 // 一元负号：在前面插入 '0'
-//                 out.push_back('0');
-//             }
-//         }
-//         out.push_back(c);
-//     }
-//     return out;
-// }
-
 inline vector<string> ExpressionEvaluator::tokenize(const string& expr) {
     const string s = expr;
     vector<string> tokens;
