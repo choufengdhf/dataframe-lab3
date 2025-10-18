@@ -345,8 +345,11 @@ public:
         res.variableName = this->variableName;
         int i1 = 0, i2 = 0;
         while (i1 != this->l || i2 != other.l) {
-            if (i1 == this->l)
-                res.push_back(other.data[i2++]);
+            if (i1 == this->l){
+                term tmp=other.data[i2++];
+                tmp.coefficient=-tmp.coefficient;
+                res.push_back(tmp);
+            }
             else if (i2 == other.l)
                 res.push_back(this->data[i1++]);
             else if (this->data[i1].degree == other.data[i2].degree) {
@@ -394,26 +397,50 @@ public:
         }
     }
     void print() {
-        if (this->l == 0) {
-            cout << "0" << endl;
-            return;
-        }
+        if (this->l == 0) { cout << "0\n"; return; }
+
         auto printTerm = [&](const term &t, bool first) {
             double c = t.coefficient;
             int deg = t.degree;
-            string cs = formatCoefficient(c);
-            if (first) {
-                cout << cs;
+            const double eps = EPS;
+            if (std::fabs(c) < eps) return; // 跳过系数为 0 的项
+
+            bool neg = c < 0;
+            double absC = std::fabs(c);
+
+            // 对系数的文本化（不带符号）
+            string coefAbsStr;
+            if (deg == 0) {
+                // 常数项总是打印完整数值
+                coefAbsStr = formatCoefficient(absC);
             } else {
-                if (c >= 0) cout << '+';
-                cout << cs;
+                // 非常数项：当系数绝对值为 1 时省略数字
+                if (std::fabs(absC - 1.0) < eps) coefAbsStr = "";
+                else coefAbsStr = formatCoefficient(absC);
             }
-            cout << variableName << "^" << deg;
+
+            // 输出符号（首项不输出 '+'）
+            if (first) {
+                if (neg) cout << '-';
+            } else {
+                cout << (neg ? '-' : '+');
+            }
+
+            // 输出系数（绝对值形式）与变量/指数
+            if (deg == 0) {
+                cout << coefAbsStr;
+            } else {
+                if (!coefAbsStr.empty()) cout << coefAbsStr;
+                cout << variableName;
+                if (deg != 1) cout << '^' << deg; // 省略 ^1
+            }
         };
 
-        printTerm(this->data[0], true);
-        for (int i = 1; i < this->l; i++) {
-            printTerm(this->data[i], false);
+        bool firstPrinted = false;
+        for (int i = 0; i < this->l; ++i) {
+            if (std::fabs(this->data[i].coefficient) < EPS) continue;
+            printTerm(this->data[i], !firstPrinted);
+            firstPrinted = true;
         }
         cout << endl;
     }

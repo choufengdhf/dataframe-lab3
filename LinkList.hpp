@@ -508,32 +508,81 @@ class Polynomial_Link : public ordered_LinkList<term>
         return e;
     }
     void print() const {
-        if(!l) { cout << "0\n"; return; }
+        if (!l) { cout << "0\n"; return; }
         node* now = headnode->sucnode;
-        auto printSingle = [&](const term &t, bool first){
-            double c = t.coefficient;
-            long long ic = llround(c);
+
+        auto formatNumber = [&](double v)->string {
             const double eps = 1e-12;
-            string cs;
-            if(ic==1&&t.degree!=0) cs=""; // 系数为1且非常数项，省略系数
-            else if(ic==-1&&t.degree!=0) cs='-'; // 系数为-1且非常数项，省略系数但保留负号
-            else if (std::fabs(c - (double)ic) < eps) cs = to_string(ic);
-            else {
-                ostringstream ss; ss.setf(ios::fixed); ss.precision(6); ss << c; cs = ss.str();
+            long long iv = llround(v);
+            if (fabs(v - (double)iv) < eps) return to_string(iv);
+            ostringstream ss; ss.setf(ios::fixed); ss.precision(6); ss << v;
+            string s = ss.str();
+            // trim trailing zeros and possible trailing dot
+            if (s.find('.') != string::npos) {
+                while (!s.empty() && s.back() == '0') s.pop_back();
+                if (!s.empty() && s.back() == '.') s.pop_back();
             }
-            if (first) {
-                cout << cs;
-            } else {
-                if (c >= 0) cout << '+';
-                cout << cs;
-            }
-            cout << variableName << "^" << t.degree;
+            return s;
         };
-        printSingle(now->data, true);
-        now = now->sucnode;
-        while (now!=headnode) {
-            printSingle(now->data, false);
-            now = now->sucnode;
+
+        auto printTerm = [&](const term &t, bool first){
+            double c = t.coefficient;
+            int deg = t.degree;
+            const double eps = 1e-12;
+            if (fabs(c) < eps) return; // skip zero coeff
+
+            bool neg = c < 0;
+            double absC = fabs(c);
+
+            // 表示系数字符串（不含符号）
+            string coefAbsStr;
+            if (deg == 0) {
+                // 常数项，打印完整数值（使用绝对值，符号单独控制）
+                coefAbsStr = formatNumber(absC);
+            } else {
+                // 非常数项：当系数绝对值为1时，省略数字
+                if (fabs(absC - 1.0) < eps) {
+                    coefAbsStr = ""; // 省略系数 1
+                } else {
+                    coefAbsStr = formatNumber(absC);
+                }
+            }
+
+            // 输出：控制符号（首项不输出 '+'）
+            if (first) {
+                if (neg) cout << '-';
+            } else {
+                cout << (neg ? '-' : '+');
+            }
+
+            // 输出系数（绝对值形式）和变量与指数
+            if (deg == 0) {
+                cout << coefAbsStr;
+            } else {
+                if (!coefAbsStr.empty()) cout << coefAbsStr;
+                cout << variableName;
+                if (deg != 1) cout << '^' << deg;
+            }
+        };
+
+        // 找到第一个非零项并打印为首项
+        node* iter = now;
+        bool firstPrinted = false;
+        while (iter != headnode) {
+            if (fabs(iter->data.coefficient) > 1e-12) {
+                printTerm(iter->data, true);
+                firstPrinted = true;
+                break;
+            }
+            iter = iter->sucnode;
+        }
+        // 打印其余项
+        if (firstPrinted) {
+            iter = iter->sucnode;
+            while (iter != headnode) {
+                if (fabs(iter->data.coefficient) > 1e-12) printTerm(iter->data, false);
+                iter = iter->sucnode;
+            }
         }
         cout << endl;
     }
